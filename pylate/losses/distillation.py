@@ -81,13 +81,22 @@ class Distillation(torch.nn.Module):
             The logits for the distillation loss.
 
         """
-        queries_embeddings = torch.nn.functional.normalize(
-            self.model(sentence_features[0])["token_embeddings"], p=2, dim=-1
+        # handle the model being wrapped in (D)DP and so require to access module first
+        normalize = (
+            self.model.normalize
+            if hasattr(self.model, "normalize")
+            else self.model.module.normalize
         )
+        queries_embeddings = self.model(sentence_features[0])["token_embeddings"]
         # Compute the bs * n_ways embeddings
-        documents_embeddings = torch.nn.functional.normalize(
-            self.model(sentence_features[1])["token_embeddings"], p=2, dim=-1
-        )
+        documents_embeddings = self.model(sentence_features[1])["token_embeddings"]
+        if normalize:
+            queries_embeddings = torch.nn.functional.normalize(
+                queries_embeddings, p=2, dim=-1
+            )
+            documents_embeddings = torch.nn.functional.normalize(
+                documents_embeddings, p=2, dim=-1
+            )
 
         # Reshape them to (bs, n_ways)
         documents_embeddings = documents_embeddings.view(

@@ -194,7 +194,14 @@ class CachedContrastive(nn.Module):
                 )
                 outputs = self.model(sentence_feature_minibatch)
                 # by default, PyLate ColBERT forward returns a dict with "token_embeddings"
-                embeddings = F.normalize(outputs["token_embeddings"], p=2, dim=-1)
+                normalize = (
+                    self.model.normalize
+                    if hasattr(self.model, "normalize")
+                    else self.model.module.normalize
+                )
+                embeddings = outputs["token_embeddings"]
+                if normalize:
+                    embeddings = F.normalize(embeddings, p=2, dim=-1)
 
         return embeddings, random_state
 

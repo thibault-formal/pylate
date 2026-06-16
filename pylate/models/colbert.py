@@ -98,6 +98,11 @@ class ColBERT(SentenceTransformer):
         is False (as in the original ColBERT codebase).
     skiplist_words
         A list of words to skip from the documents scoring (note that these tokens are used for encoding and are only skipped during the scoring). Default is the list of string.punctuation.
+    normalize
+        Whether to L2-normalize the token embeddings. When True (default), the late interaction (MaxSim) scoring
+        is equivalent to cosine similarity. When False, embeddings are left un-normalized and the scoring becomes
+        a raw dot product. This flag is the single source of truth and propagates to ``encode`` and the training
+        losses. Default is True.
     model_kwargs : dict, optional
         Additional model configuration parameters to be passed to the Huggingface Transformers model. Particularly
         useful options are:
@@ -212,6 +217,7 @@ class ColBERT(SentenceTransformer):
         do_query_expansion: bool | None = None,
         attend_to_expansion_tokens: bool | None = None,
         skiplist_words: list[str] | None = None,
+        normalize: bool | None = None,
         model_kwargs: dict | None = None,
         tokenizer_kwargs: dict | None = None,
         config_kwargs: dict | None = None,
@@ -224,6 +230,7 @@ class ColBERT(SentenceTransformer):
         self.do_query_expansion = do_query_expansion
         self.attend_to_expansion_tokens = attend_to_expansion_tokens
         self.skiplist_words = skiplist_words
+        self.normalize = normalize
         model_card_data = model_card_data or PylateModelCardData()
         if similarity_fn_name is None:
             similarity_fn_name = "MaxSim"
@@ -470,6 +477,14 @@ class ColBERT(SentenceTransformer):
         if not self.do_query_expansion:
             self.attend_to_expansion_tokens = False
 
+        self.normalize = (
+            normalize
+            if normalize is not None
+            else self.normalize
+            if self.normalize is not None
+            else True
+        )
+
     @staticmethod
     def load(input_path) -> "ColBERT":
         return ColBERT(model_name_or_path=input_path)
@@ -503,7 +518,7 @@ class ColBERT(SentenceTransformer):
         convert_to_tensor: bool = False,
         padding: bool = False,
         device: str = None,
-        normalize_embeddings: bool = True,
+        normalize_embeddings: bool | None = None,
         is_query: bool = True,
         pool_factor: int = 1,
         protected_tokens: int = 1,
@@ -545,8 +560,9 @@ class ColBERT(SentenceTransformer):
         device
             Which :class:`torch.device` to use for the computation. Defaults to None.
         normalize_embeddings
-            Whether to normalize returned vectors to have length 1. In that case, the faster dot-product (util.dot_score)
-            instead of cosine similarity can be used. Defaults to False.
+            Whether to L2-normalize returned vectors to have length 1, making the late interaction (MaxSim) scoring
+            equivalent to cosine similarity. If False, embeddings are left un-normalized and scoring is a raw dot
+            product. If None (default), falls back to the model-level ``normalize`` flag set at initialization.
         is_query
             Whether the input sentences are queries. If True, the query prefix is added to the input sentences and the
             sequence is padded; otherwise, the document prefix is added and the sequence is not padded. Defaults to True.
@@ -565,6 +581,8 @@ class ColBERT(SentenceTransformer):
             and token IDs. Incompatible with ``pool_factor > 1``.
 
         """
+        if normalize_embeddings is None:
+            normalize_embeddings = self.normalize
         if output_value not in ("token_embeddings", None):
             raise ValueError(
                 f"output_value must be 'token_embeddings' or None, got {output_value!r}."
@@ -1010,7 +1028,7 @@ class ColBERT(SentenceTransformer):
         batch_size: int = 32,
         chunk_size: int = None,
         precision: Literal["float32", "int8", "uint8", "binary", "ubinary"] = "float32",
-        normalize_embeddings: bool = True,
+        normalize_embeddings: bool | None = None,
         padding: bool = False,
         is_query: bool = True,
         pool_factor: int = 1,
@@ -1050,8 +1068,9 @@ class ColBERT(SentenceTransformer):
             have lower accuracy. They are useful for reducing the size of the embeddings of a corpus for
             semantic search, among other tasks. Defaults to "float32".
         normalize_embeddings
-            Whether to normalize returned vectors to have length 1. In that case,
-            the faster dot-product (util.dot_score) instead of cosine similarity can be used. Defaults to True.
+            Whether to L2-normalize returned vectors to have length 1 (MaxSim equivalent to cosine similarity).
+            If False, embeddings are left un-normalized and scoring is a raw dot product. If None (default), falls
+            back to the model-level ``normalize`` flag set at initialization.
         padding
             Padding strategy to use. If True, pads all sequences to the maximum length in the batch.
         is_query
@@ -1241,6 +1260,7 @@ class ColBERT(SentenceTransformer):
             config["attend_to_expansion_tokens"] = self.attend_to_expansion_tokens
             config["skiplist_words"] = self.skiplist_words
             config["do_query_expansion"] = self.do_query_expansion
+            config["normalize"] = self.normalize
             json.dump(config, fOut, indent=2)
 
     def _load_auto_model(
@@ -1394,6 +1414,8 @@ class ColBERT(SentenceTransformer):
                 self.skiplist_words = self._model_config["skiplist_words"]
             if "do_query_expansion" in self._model_config:
                 self.do_query_expansion = self._model_config["do_query_expansion"]
+            if "normalize" in self._model_config:
+                self.normalize = self._model_config["normalize"]
 
         return [
             module

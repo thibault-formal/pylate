@@ -155,12 +155,21 @@ class Contrastive(nn.Module):
             The labels for the contrastive loss. Not used in this implementation, but kept for compatibility with Trainer.
 
         """
+        # handle the model being wrapped in (D)DP and so require to access module first
+        normalize = (
+            self.model.normalize
+            if hasattr(self.model, "normalize")
+            else self.model.module.normalize
+        )
         embeddings = [
-            torch.nn.functional.normalize(
-                self.model(sentence_feature)["token_embeddings"], p=2, dim=-1
-            )
+            self.model(sentence_feature)["token_embeddings"]
             for sentence_feature in sentence_features
         ]
+        if normalize:
+            embeddings = [
+                torch.nn.functional.normalize(embedding, p=2, dim=-1)
+                for embedding in embeddings
+            ]
         # handle the model being wrapped in (D)DP and so require to access module first
         skiplist = (
             self.model.skiplist
