@@ -147,6 +147,10 @@ class PyLateInformationRetrievalEvaluator(InformationRetrievalEvaluator):
                         "score": score,
                     }
 
+        # Expose the per-query ranked results so external callers (e.g. a callback
+        # plotting interaction matrices) can reuse this retrieval without re-encoding.
+        self.queries_result_list = queries_result_list
+
         if self.write_predictions and output_path is not None:
             for name in queries_result_list:
                 base_filename = self.predictions_file.replace(
