@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import logging
 import math
@@ -103,6 +104,12 @@ class ColBERT(SentenceTransformer):
         is equivalent to cosine similarity. When False, embeddings are left un-normalized and the scoring becomes
         a raw dot product. This flag is the single source of truth and propagates to ``encode`` and the training
         losses. Default is True.
+    saturation
+        Optional saturation applied to each query token's max similarity before summing, between the max over
+        document tokens and the sum over query tokens. ``None`` (default) disables it; ``"log1p_relu"`` applies the
+        SPLADE-style ``log(1 + ReLU(s))``. Mainly meaningful with ``normalize=False`` (dot product), where it tames
+        large activations while keeping term importance expressible. Propagates to the training loss and to the
+        similarity function used at retrieval/eval time.
     model_kwargs : dict, optional
         Additional model configuration parameters to be passed to the Huggingface Transformers model. Particularly
         useful options are:
@@ -218,6 +225,7 @@ class ColBERT(SentenceTransformer):
         attend_to_expansion_tokens: bool | None = None,
         skiplist_words: list[str] | None = None,
         normalize: bool | None = None,
+        saturation: str | None = None,
         model_kwargs: dict | None = None,
         tokenizer_kwargs: dict | None = None,
         config_kwargs: dict | None = None,
@@ -231,6 +239,7 @@ class ColBERT(SentenceTransformer):
         self.attend_to_expansion_tokens = attend_to_expansion_tokens
         self.skiplist_words = skiplist_words
         self.normalize = normalize
+        self.saturation = saturation
         model_card_data = model_card_data or PylateModelCardData()
         if similarity_fn_name is None:
             similarity_fn_name = "MaxSim"
@@ -484,6 +493,20 @@ class ColBERT(SentenceTransformer):
             if self.normalize is not None
             else True
         )
+
+        self.saturation = (
+            saturation
+            if saturation is not None
+            else self.saturation
+            if self.saturation is not None
+            else None
+        )
+        # Bind saturation into the similarity function so retrieval/eval (which
+        # score through it) match training. Mostly meaningful with normalize=False.
+        if self.saturation is not None:
+            self._similarity = functools.partial(
+                self._similarity, saturation=self.saturation
+            )
 
     @staticmethod
     def load(input_path) -> "ColBERT":
@@ -1261,6 +1284,7 @@ class ColBERT(SentenceTransformer):
             config["skiplist_words"] = self.skiplist_words
             config["do_query_expansion"] = self.do_query_expansion
             config["normalize"] = self.normalize
+            config["saturation"] = self.saturation
             json.dump(config, fOut, indent=2)
 
     def _load_auto_model(
@@ -1416,6 +1440,8 @@ class ColBERT(SentenceTransformer):
                 self.do_query_expansion = self._model_config["do_query_expansion"]
             if "normalize" in self._model_config:
                 self.normalize = self._model_config["normalize"]
+            if "saturation" in self._model_config:
+                self.saturation = self._model_config["saturation"]
 
         return [
             module

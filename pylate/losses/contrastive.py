@@ -161,6 +161,11 @@ class Contrastive(nn.Module):
             if hasattr(self.model, "normalize")
             else self.model.module.normalize
         )
+        saturation = (
+            self.model.saturation
+            if hasattr(self.model, "saturation")
+            else self.model.module.saturation
+        )
         embeddings = [
             self.model(sentence_feature)["token_embeddings"]
             for sentence_feature in sentence_features
@@ -212,6 +217,8 @@ class Contrastive(nn.Module):
         # still flow through one big backward below.
         # If the score_mini_batch_size is not set, we process the entire batch at once (old behavior)
         step = self.score_mini_batch_size or batch_size
+        # Only forwarded when set, so custom score_metric callables are unaffected.
+        score_kwargs = {} if saturation is None else {"saturation": saturation}
         score_chunks = []
         for begin in range(0, batch_size, step):
             end = begin + step
@@ -221,6 +228,7 @@ class Contrastive(nn.Module):
                     docs_stacked,
                     queries_mask=q_mask[begin:end] if q_mask is not None else None,
                     documents_mask=docs_mask_stacked,
+                    **score_kwargs,
                 )
             )
         scores = torch.cat(score_chunks, dim=0)

@@ -83,12 +83,30 @@ def _try_lik(backend: str, *tensors: torch.Tensor) -> bool:
     return True
 
 
+def _apply_saturation(scores: torch.Tensor, saturation: str | None) -> torch.Tensor:
+    """Saturate the per-query-token max similarities before summing them.
+
+    Applied between the ``max`` over document tokens and the ``sum`` over query
+    tokens. Because it is monotonic, this is identical to applying it elementwise
+    on the full similarity matrix, but cheaper. It is mainly meaningful for
+    un-normalized (dot product) scoring, where ``log1p_relu`` (SPLADE-style
+    ``log(1 + ReLU(s))``) tames large activations while keeping term importance
+    expressible (unbounded), unlike the hard [-1, 1] cap of cosine.
+    """
+    if saturation is None:
+        return scores
+    if saturation == "log1p_relu":
+        return torch.log1p(torch.relu(scores))
+    raise ValueError(f"saturation must be None or 'log1p_relu'; got {saturation!r}")
+
+
 def colbert_scores(
     queries_embeddings: list | np.ndarray | torch.Tensor,
     documents_embeddings: list | np.ndarray | torch.Tensor,
     queries_mask: torch.Tensor | None = None,
     documents_mask: torch.Tensor | None = None,
     backend: str | None = None,
+    saturation: str | None = None,
 ) -> torch.Tensor:
     """Computes the ColBERT scores between queries and documents embeddings. The score is computed as the sum of maximum similarities
     between the query and the document.
@@ -110,6 +128,10 @@ def colbert_scores(
         and CUDA inputs; raises otherwise), or ``"lik"`` (requires
         ``pip install "pylate[lik]"`` and CUDA/MPS inputs; raises otherwise).
         Override via env var ``PYLATE_SCORES_BACKEND``.
+    saturation
+        Optional saturation applied to each query token's max similarity before
+        the sum (``None`` or ``"log1p_relu"``). When set, the fused backends are
+        skipped (the torch path is required to insert it between max and sum).
 
     Examples
     --------
@@ -157,7 +179,11 @@ def colbert_scores(
         documents_mask = convert_to_tensor(documents_mask)
 
     resolved = _resolve_backend(backend)
-    if _try_flash(resolved, queries_embeddings, documents_embeddings):
+    # Saturation must be inserted between max and sum, which the fused kernels
+    # do not expose, so it forces the torch path below.
+    if saturation is None and _try_flash(
+        resolved, queries_embeddings, documents_embeddings
+    ):
         try:
             from ._flash_backend import colbert_scores_flash
 
@@ -171,7 +197,9 @@ def colbert_scores(
             if resolved == "flash":
                 raise
             # auto: try LIK next, else the torch path below.
-    if _try_lik(resolved, queries_embeddings, documents_embeddings):
+    if saturation is None and _try_lik(
+        resolved, queries_embeddings, documents_embeddings
+    ):
         try:
             from ._lik_backend import colbert_scores_lik
 
@@ -197,7 +225,8 @@ def colbert_scores(
 
     if documents_mask is not None:
         scores = scores * documents_mask.unsqueeze(0).unsqueeze(2)
-    scores = scores.max(axis=-1).values.sum(axis=-1)
+    scores = _apply_saturation(scores.max(axis=-1).values, saturation)
+    scores = scores.sum(axis=-1)
     return scores
 
 
@@ -410,6 +439,7 @@ class ColBERTScores:
         queries_mask: torch.Tensor | None = None,
         documents_mask: torch.Tensor | None = None,
         backend: str | None = None,
+        saturation: str | None = None,
     ) -> torch.Tensor:
         queries_embeddings = convert_to_tensor(queries_embeddings)
         documents_embeddings = convert_to_tensor(documents_embeddings)
@@ -423,6 +453,7 @@ class ColBERTScores:
                 queries_mask,
                 documents_mask[:, j] if documents_mask is not None else None,
                 backend=backend,
+                saturation=saturation,
             )
             for j in range(N)
         ]
